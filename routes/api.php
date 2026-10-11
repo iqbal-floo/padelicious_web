@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\PlayerController;
 use App\Http\Controllers\Api\RoundController;
 use App\Http\Controllers\Api\ScoreController;
 use App\Http\Controllers\Api\SessionController;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -22,6 +23,18 @@ use Illuminate\Support\Facades\Route;
 | participant with the admin role (SessionPolicy::manage).
 */
 
+// Local/testing only: lets the integration suite reset the auth throttle
+// so it exercises auth rather than the rate limiter.
+if (! app()->isProduction()) {
+    Route::post('test/clear-rate-limit', function () {
+        // The throttle middleware keys off the cache store, so flushing it
+        // is what actually resets the counters.
+        Cache::flush();
+
+        return response()->json(['cleared' => true]);
+    })->name('api.test.clear-rate-limit');
+}
+
 Route::prefix('v1')->group(function () {
     // Public live score: a spectator needs only the match uuid. Read-only.
     Route::get('live/matches/{match}', [LiveScoreController::class, 'show'])
@@ -32,6 +45,14 @@ Route::prefix('v1')->group(function () {
     Route::post('auth/login', [AuthController::class, 'login'])
         ->middleware('throttle:6,1')
         ->name('api.auth.login');
+
+    Route::post('auth/register', [AuthController::class, 'register'])
+        ->middleware('throttle:6,1')
+        ->name('api.auth.register');
+
+    Route::post('auth/google', [AuthController::class, 'google'])
+        ->middleware('throttle:10,1')
+        ->name('api.auth.google');
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('auth/me', [AuthController::class, 'me'])->name('api.auth.me');

@@ -23,9 +23,32 @@ generic message (it does not reveal whether the email exists).
 
 | Method | Path | Notes |
 |---|---|---|
+| POST | `/auth/register` | Creates user + player profile, returns a token. `201` |
 | POST | `/auth/login` | Issue token |
+| POST | `/auth/google` | Exchange a Google access token for an API token. `503` until credentials are configured — see `docs/google-sso.md` |
 | GET | `/auth/me` | Current user + linked player profile |
 | POST | `/auth/logout` | Revokes only the calling token |
+
+### Registering
+
+```json
+POST /api/v1/auth/register
+{
+  "full_name": "Iqbal Ramadhan",
+  "email": "you@email.com",
+  "password": "secret123",
+  "password_confirmation": "secret123",
+  "device_name": "flutter-android"
+}
+```
+
+Creates the user **and their player profile** in one transaction — the
+profile is what sessions, standings and club membership reference. The
+display name is the first word of the full name and initials are derived
+from it, so "Iqbal Ramadhan" becomes `Iqbal` / `IR`.
+
+Email uniqueness is case-insensitive (the column is `citext`). Register
+and login are each throttled to 6 requests/minute.
 
 ## Resources
 
