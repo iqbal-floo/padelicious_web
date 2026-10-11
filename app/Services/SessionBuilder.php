@@ -154,16 +154,31 @@ class SessionBuilder
                 ->get()
                 ->keyBy('participant_id');
 
+            $matchTypeCategory = $session->matchType?->category;
+
             $roster = $session->participants()
                 ->where('status', ParticipantStatus::Active->value)
                 // player is needed for the mixed-gender constraint.
                 ->with('player')
-                ->get()
-                ->sortBy([
-                    fn ($p) => $standings[$p->id]->matches_played ?? 0,
-                    fn ($p) => -($standings[$p->id]->points ?? 0),
-                ])
-                ->values();
+                ->get();
+
+            // One comparator returning a sortable tuple: passing an ARRAY of
+            // closures to sortBy() does not order an Eloquent collection the
+            // way it does a plain one, so build the key explicitly.
+            $roster = ($matchTypeCategory === 'Mexicano'
+                // Standings order: rank 1 first. Unranked (round 1) players
+                // sort last, leaving the roster order intact.
+                ? $roster->sortBy(fn ($p) => sprintf(
+                    '%010d:%010d',
+                    $standings[$p->id]->rank ?? PHP_INT_MAX,
+                    PHP_INT_MAX - ($standings[$p->id]->points ?? 0),
+                ))
+                // Everything else: fewest matches played first, for fairness.
+                : $roster->sortBy(fn ($p) => sprintf(
+                    '%010d:%010d',
+                    $standings[$p->id]->matches_played ?? 0,
+                    PHP_INT_MAX - ($standings[$p->id]->points ?? 0),
+                )))->values();
 
             if ($roster->count() < 4) {
                 throw new RuntimeException('At least 4 active players are required.');
@@ -179,11 +194,28 @@ class SessionBuilder
             ]);
 
             // Each entry is [sideAParticipants, sideBParticipants].
-            $pairings = $matchType?->is_team_based
-                ? $this->teamPairings($session, $roster, $courts->count())
-                : ($matchType?->is_mixed
-                    ? $this->mixedPairings($roster, $courts->count())
-                    : $this->rotationPairings($roster, $courts->count()));
+            // Mexicano decides opponents by standings rather than by
+            // evenness, so it needs its own strategies.
+            $isMexicano = $matchType?->category === 'Mexicano';
+
+            $pairings = match (true) {
+                $isMexicano && $matchType->is_team_based => $this->teamPairings(
+                    $session, $roster, $courts->count(), byRank: true,
+                ),
+                $isMexicano && $matchType->is_mixed => $this->mixedPairings(
+                    $roster, $courts->count(), byRank: true,
+                ),
+                $isMexicano => $this->mexicanoPairings(
+                    $session, $roster, $courts->count(),
+                ),
+                (bool) $matchType?->is_team_based => $this->teamPairings(
+                    $session, $roster, $courts->count(),
+                ),
+                (bool) $matchType?->is_mixed => $this->mixedPairings(
+                    $roster, $courts->count(),
+                ),
+                default => $this->rotationPairings($roster, $courts->count()),
+            };
 
             foreach ($pairings as $i => [$sideA, $sideB]) {
                 $match = MatchGame::query()->create([
@@ -224,29 +256,38 @@ class SessionBuilder
      * Fixed partnerships (team_americano, team_mexicano, team_koth).
      *
      * Pairs are decided once — at setup, or on the first round — and reused
-     * for every subsequent round. Only the opponents rotate.
+     * for every subsequent round. Only the opponents change.
+     *
+     * With $byRank (Team Mexicano) the strongest teams are matched against
+     * each other; otherwise opponents rotate for even playing time.
      *
      * @param  Collection<int, SessionParticipant>  $roster
      * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
      */
-    private function teamPairings(Session $session, $roster, int $courtCount): array
-    {
+    private function teamPairings(
+        Session $session,
+        $roster,
+        int $courtCount,
+        bool $byRank = false,
+    ): array {
         $teams = $this->ensureTeams($session, $roster);
 
         if (count($teams) < 2) {
             throw new RuntimeException('A team format needs at least 2 full teams.');
         }
 
-        // Rotate which teams meet: order by matches played so every team
-        // gets an even number of games, then pair them off.
         $standings = SessionStanding::query()
             ->where('session_id', $session->id)
             ->get()
             ->keyBy('participant_id');
 
         $ordered = collect($teams)
-            ->sortBy(fn (array $members) => collect($members)
-                ->sum(fn ($p) => $standings[$p->id]->matches_played ?? 0))
+            ->sortBy(fn (array $members) => $byRank
+                // Team Mexicano: strongest teams meet (1st v 2nd, 3rd v 4th),
+                // so order by combined points, descending.
+                ? -collect($members)->sum(fn ($p) => $standings[$p->id]->points ?? 0)
+                // Otherwise rotate for evenness: fewest matches played first.
+                : collect($members)->sum(fn ($p) => $standings[$p->id]->matches_played ?? 0))
             ->values()
             ->all();
 
@@ -309,10 +350,13 @@ class SessionBuilder
      * Mixed formats (mix_americano, mixicano): every pair must be one man
      * and one woman.
      *
+     * With $byRank (Mixicano) the four players on a court are balanced by
+     * standings as well as gender.
+     *
      * @param  Collection<int, SessionParticipant>  $roster
      * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
      */
-    private function mixedPairings($roster, int $courtCount): array
+    private function mixedPairings($roster, int $courtCount, bool $byRank = false): array
     {
         $men = $roster->filter(fn ($p) => $p->player?->gender === PlayerGender::Male)->values();
         $women = $roster->filter(fn ($p) => $p->player?->gender === PlayerGender::Female)->values();
@@ -342,15 +386,53 @@ class SessionBuilder
             $w1 = $women[$i * 2];
             $w2 = $women[$i * 2 + 1];
 
-            $pairings[] = [[$m1, $w1], [$m2, $w2]];
+            // Mixicano: the roster is already in rank order, so the higher
+            // man partners the lower woman of the four (and vice versa),
+            // mirroring Mexicano's 1+4 v 2+3 balancing.
+            $pairings[] = $byRank
+                ? [[$m1, $w2], [$m2, $w1]]
+                : [[$m1, $w1], [$m2, $w2]];
         }
 
         return $pairings;
     }
 
     /**
-     * Individual formats (americano, mexicano, koth): partners rotate every
-     * round, paired [1,3] v [2,4] from the fairness-sorted roster.
+     * Mexicano: opponents come from the standings, not from evenness.
+     *
+     * The roster arrives in rank order, so each court takes the next four
+     * players and pairs them 1st+4th against 2nd+3rd. That puts the
+     * leader with the weakest of the four, which is the whole point of
+     * the format — it keeps matches close.
+     *
+     * In round 1 nobody is ranked yet, so this falls back to roster order,
+     * which is the conventional seeding.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
+     */
+    private function mexicanoPairings(Session $session, $roster, int $courtCount): array
+    {
+        $pairings = [];
+        $playable = min($courtCount, intdiv($roster->count(), 4));
+
+        for ($i = 0; $i < $playable; $i++) {
+            $four = $roster->slice($i * 4, 4)->values();
+
+            // [0]=best of the four, [3]=weakest.
+            $pairings[] = [
+                [$four[0], $four[3]],
+                [$four[1], $four[2]],
+            ];
+        }
+
+        return $pairings;
+    }
+
+    /**
+     * Individual formats with no ranking rule (americano, koth): partners
+     * rotate every round, paired [1,3] v [2,4] from the fairness-sorted
+     * roster. Mexicano uses mexicanoPairings() instead.
      *
      * @param  Collection<int, SessionParticipant>  $roster
      * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>

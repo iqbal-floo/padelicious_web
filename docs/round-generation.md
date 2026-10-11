@@ -12,10 +12,11 @@
 |---|---|---|
 | `americano` | rotation | Fewest-matches-played first, then `[1,3]` v `[2,4]` |
 | `team_americano` | **fixed pairs** | Pairs created once in `session_teams`, reused for every later round; only opponents rotate, ordered by matches played so each team gets even time |
-| `team_mexicano` | fixed pairs | Shares the team strategy. Still missing the Mexicano *ranking* rule for who plays whom |
+| `team_mexicano` | fixed pairs + **rank** | Pairs fixed; strongest teams matched against each other by combined points |
+| `mexicano` | **rank** | Roster in standings order; each court takes four and pairs 1st+4th v 2nd+3rd |
 | `team_koth` | fixed pairs | Shares the team strategy. Missing the king-court promotion/relegation rule |
 | `mix_americano` | **mixed** | Requires every participant's gender; pairs M+F per court |
-| `mixicano` | mixed | Shares the mixed strategy. Still missing the Mexicano ranking rule |
+| `mixicano` | mixed + **rank** | M+F pairs, balanced by standings (higher man with lower woman) |
 
 ### Fixed partnerships
 
@@ -24,6 +25,21 @@
 the roster order, two players at a time, and a leftover odd player stays
 unassigned and sits out. Once assigned, a player keeps that partner for
 the session.
+
+### Mexicano ranking
+
+For the three Mexicano-category types the roster is sorted by
+`session_standings.rank` (not by matches played — that fairness sort
+actively fights the format). Each court then takes the next four players
+and pairs **1st + 4th against 2nd + 3rd**, which puts the leader with the
+weakest of the four and keeps matches close.
+
+Round 1 has no standings yet, so unranked players sort last and the
+roster order stands — the conventional seeding.
+
+`team_mexicano` instead orders whole teams by combined points, so the
+strongest teams meet. `mixicano` applies the balancing within the
+gender constraint: the higher-ranked man partners the lower-ranked woman.
 
 ### Mixed formats
 
@@ -39,11 +55,10 @@ each, so they are treated as unset.
 
 | # | Code | What it needs |
 |---|---|---|
-| 1 | `mexicano` | Pair by **current rank** (1+4 v 2+3, 5+8 v 6+7). The fairness sort currently used fights this — Mexicano wants standings order |
-| 2 | `mixicano` | Mexicano ranking on top of the mixed constraint (the gender half is done) |
-| 3 | `team_mexicano` | Team standings deciding who plays whom (1st v 2nd), rather than matches-played rotation |
-| 4 | `koth` | King/challenger courts, winners up and losers down. Not round-shaped: the `rounds` table models "generate N matches at once", which fits KOTH poorly |
-| 5 | `team_koth` | Same, with fixed teams |
+| 1 | `koth` | King/challenger courts, winners up and losers down. Not round-shaped: the `rounds` table models "generate N matches at once", which fits KOTH poorly |
+| 2 | `team_koth` | Same, with fixed teams |
+
+KOTH currently runs the generic rotation, so it plays like Americano.
 
 The three `club_*` types were **removed** (migration
 `2025_01_01_001000`). They were seeded but never implemented —
