@@ -2,21 +2,25 @@
 
 namespace App\Models;
 
+use App\Enums\UserStatus;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable(['full_name', 'email', 'password_hash', 'phone', 'status'])]
 #[Hidden(['password_hash'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasFactory, HasUuids, Notifiable;
+    use HasApiTokens, HasFactory, HasUuids, Notifiable;
 
     /**
      * The schema (docs/schema.sql) uses a uuid primary key, not an
@@ -52,6 +56,17 @@ class User extends Authenticatable
             'accepted_terms_at' => 'datetime',
             'last_login_at' => 'datetime',
             'password_hash' => 'hashed',
+            'status' => UserStatus::class,
         ];
+    }
+
+    public function player(): HasOne
+    {
+        return $this->hasOne(Player::class);
+    }
+
+    public function authIdentities(): HasMany
+    {
+        return $this->hasMany(UserAuthIdentity::class);
     }
 }
