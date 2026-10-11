@@ -6,6 +6,7 @@ use App\Enums\MatchStatus;
 use App\Enums\ParticipantRole;
 use App\Enums\ParticipantSource;
 use App\Enums\ParticipantStatus;
+use App\Enums\PlayerGender;
 use App\Enums\RoundStatus;
 use App\Enums\SessionStatus;
 use App\Enums\TeamSide;
@@ -18,6 +19,8 @@ use App\Models\Round;
 use App\Models\Session;
 use App\Models\SessionParticipant;
 use App\Models\SessionStanding;
+use App\Models\SessionTeam;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -153,6 +156,8 @@ class SessionBuilder
 
             $roster = $session->participants()
                 ->where('status', ParticipantStatus::Active->value)
+                // player is needed for the mixed-gender constraint.
+                ->with('player')
                 ->get()
                 ->sortBy([
                     fn ($p) => $standings[$p->id]->matches_played ?? 0,
@@ -164,7 +169,7 @@ class SessionBuilder
                 throw new RuntimeException('At least 4 active players are required.');
             }
 
-            $playableCourts = min($courts->count(), intdiv($roster->count(), 4));
+            $matchType = $session->matchType;
 
             $round = Round::query()->create([
                 'session_id' => $session->id,
@@ -173,9 +178,14 @@ class SessionBuilder
                 'generated_at' => now(),
             ]);
 
-            for ($i = 0; $i < $playableCourts; $i++) {
-                $four = $roster->slice($i * 4, 4)->values();
+            // Each entry is [sideAParticipants, sideBParticipants].
+            $pairings = $matchType?->is_team_based
+                ? $this->teamPairings($session, $roster, $courts->count())
+                : ($matchType?->is_mixed
+                    ? $this->mixedPairings($roster, $courts->count())
+                    : $this->rotationPairings($roster, $courts->count()));
 
+            foreach ($pairings as $i => [$sideA, $sideB]) {
                 $match = MatchGame::query()->create([
                     'round_id' => $round->id,
                     'court_id' => $courts[$i]->id,
@@ -183,16 +193,16 @@ class SessionBuilder
                     'serving_team' => TeamSide::A,
                 ]);
 
-                foreach ([[TeamSide::A, [0, 2]], [TeamSide::B, [1, 3]]] as [$side, $slots]) {
+                foreach ([[TeamSide::A, $sideA], [TeamSide::B, $sideB]] as [$side, $members]) {
                     $team = MatchTeam::query()->create([
                         'match_id' => $match->id,
                         'side' => $side,
                     ]);
 
-                    foreach ($slots as $slot => $rosterIndex) {
+                    foreach (array_values($members) as $slot => $participant) {
                         MatchTeamPlayer::query()->create([
                             'match_team_id' => $team->id,
-                            'participant_id' => $four[$rosterIndex]->id,
+                            'participant_id' => $participant->id,
                             'slot' => $slot + 1,
                         ]);
                     }
@@ -208,5 +218,153 @@ class SessionBuilder
 
             return $round->load('matches.teams.players');
         });
+    }
+
+    /**
+     * Fixed partnerships (team_americano, team_mexicano, team_koth).
+     *
+     * Pairs are decided once — at setup, or on the first round — and reused
+     * for every subsequent round. Only the opponents rotate.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
+     */
+    private function teamPairings(Session $session, $roster, int $courtCount): array
+    {
+        $teams = $this->ensureTeams($session, $roster);
+
+        if (count($teams) < 2) {
+            throw new RuntimeException('A team format needs at least 2 full teams.');
+        }
+
+        // Rotate which teams meet: order by matches played so every team
+        // gets an even number of games, then pair them off.
+        $standings = SessionStanding::query()
+            ->where('session_id', $session->id)
+            ->get()
+            ->keyBy('participant_id');
+
+        $ordered = collect($teams)
+            ->sortBy(fn (array $members) => collect($members)
+                ->sum(fn ($p) => $standings[$p->id]->matches_played ?? 0))
+            ->values()
+            ->all();
+
+        $pairings = [];
+        $playable = min($courtCount, intdiv(count($ordered), 2));
+
+        for ($i = 0; $i < $playable; $i++) {
+            $pairings[] = [$ordered[$i * 2], $ordered[$i * 2 + 1]];
+        }
+
+        return $pairings;
+    }
+
+    /**
+     * Reads the session's fixed teams, creating them from the roster on
+     * first use. Players already assigned keep their partner.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @return list<list<SessionParticipant>>
+     */
+    private function ensureTeams(Session $session, $roster): array
+    {
+        $byTeam = $roster
+            ->filter(fn ($p) => $p->session_team_id !== null)
+            ->groupBy('session_team_id');
+
+        $unassigned = $roster->filter(fn ($p) => $p->session_team_id === null)->values();
+
+        // Pair up anyone not yet on a team, in roster order.
+        $nextNumber = (int) SessionTeam::query()
+            ->where('session_id', $session->id)
+            ->max('team_number');
+
+        for ($i = 0; $i + 1 < $unassigned->count(); $i += 2) {
+            $a = $unassigned[$i];
+            $b = $unassigned[$i + 1];
+
+            $team = SessionTeam::query()->create([
+                'session_id' => $session->id,
+                'team_number' => ++$nextNumber,
+                'name' => $a->display_name_snapshot.' / '.$b->display_name_snapshot,
+            ]);
+
+            foreach ([$a, $b] as $participant) {
+                $participant->forceFill(['session_team_id' => $team->id])->save();
+            }
+
+            $byTeam[$team->id] = collect([$a, $b]);
+        }
+
+        // Only complete pairs can play; a leftover player sits out.
+        return $byTeam
+            ->filter(fn ($members) => $members->count() === 2)
+            ->map(fn ($members) => $members->values()->all())
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Mixed formats (mix_americano, mixicano): every pair must be one man
+     * and one woman.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
+     */
+    private function mixedPairings($roster, int $courtCount): array
+    {
+        $men = $roster->filter(fn ($p) => $p->player?->gender === PlayerGender::Male)->values();
+        $women = $roster->filter(fn ($p) => $p->player?->gender === PlayerGender::Female)->values();
+
+        $unknown = $roster->count() - $men->count() - $women->count();
+
+        if ($unknown > 0) {
+            throw new RuntimeException(
+                "A mixed format needs every player's gender set; {$unknown} player(s) have not set theirs."
+            );
+        }
+
+        // Each court needs 2 men and 2 women.
+        $courts = min($courtCount, intdiv($men->count(), 2), intdiv($women->count(), 2));
+
+        if ($courts < 1) {
+            throw new RuntimeException(
+                'A mixed format needs at least 2 men and 2 women to fill a court.'
+            );
+        }
+
+        $pairings = [];
+
+        for ($i = 0; $i < $courts; $i++) {
+            $m1 = $men[$i * 2];
+            $m2 = $men[$i * 2 + 1];
+            $w1 = $women[$i * 2];
+            $w2 = $women[$i * 2 + 1];
+
+            $pairings[] = [[$m1, $w1], [$m2, $w2]];
+        }
+
+        return $pairings;
+    }
+
+    /**
+     * Individual formats (americano, mexicano, koth): partners rotate every
+     * round, paired [1,3] v [2,4] from the fairness-sorted roster.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
+     */
+    private function rotationPairings($roster, int $courtCount): array
+    {
+        $pairings = [];
+        $playable = min($courtCount, intdiv($roster->count(), 4));
+
+        for ($i = 0; $i < $playable; $i++) {
+            $four = $roster->slice($i * 4, 4)->values();
+            $pairings[] = [[$four[0], $four[2]], [$four[1], $four[3]]];
+        }
+
+        return $pairings;
     }
 }

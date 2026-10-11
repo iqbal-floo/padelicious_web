@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\AuthProvider;
+use App\Enums\PlayerGender;
 use App\Enums\UserStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\RegisterRequest;
@@ -112,7 +113,12 @@ class AuthController extends Controller
                 'last_login_at' => now(),
             ])->save();
 
-            $profiles->forUser($user);
+            $profiles->forUser(
+                $user,
+                isset($data['gender']) && $data['gender'] !== null
+                    ? PlayerGender::from($data['gender'])
+                    : null,
+            );
 
             return $user;
         });

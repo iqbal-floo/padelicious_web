@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\PlayerGender;
 use App\Models\Player;
 use App\Models\User;
 
@@ -11,9 +12,15 @@ use App\Models\User;
  */
 class PlayerProfileFactory
 {
-    public function forUser(User $user): Player
+    public function forUser(User $user, ?PlayerGender $gender = null): Player
     {
         if ($existing = Player::query()->where('user_id', $user->id)->first()) {
+            // Fill in a gender we did not have before, but never overwrite
+            // one the player has already chosen.
+            if ($gender && $existing->gender === PlayerGender::Undisclosed) {
+                $existing->forceFill(['gender' => $gender])->save();
+            }
+
             return $existing;
         }
 
@@ -23,6 +30,7 @@ class PlayerProfileFactory
             'initials' => $this->initials($user->full_name),
             // Spread avatar colours deterministically across the 8 slots.
             'avatar_color_index' => $this->colorIndex($user->email),
+            'gender' => $gender ?? PlayerGender::Undisclosed,
         ]);
     }
 

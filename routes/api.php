@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\LiveScoreController;
 use App\Http\Controllers\Api\MatchTypeController;
 use App\Http\Controllers\Api\ParticipantController;
 use App\Http\Controllers\Api\PlayerController;
+use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\RoundController;
 use App\Http\Controllers\Api\ScoreController;
 use App\Http\Controllers\Api\SessionController;
@@ -56,6 +57,7 @@ Route::prefix('v1')->group(function () {
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('auth/me', [AuthController::class, 'me'])->name('api.auth.me');
+        Route::patch('profile', [ProfileController::class, 'update'])->name('api.profile.update');
         Route::post('auth/logout', [AuthController::class, 'logout'])->name('api.auth.logout');
 
         Route::get('match-types', [MatchTypeController::class, 'index'])->name('api.match-types.index');

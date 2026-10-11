@@ -20,7 +20,7 @@ class SessionParticipant extends Model
     protected $fillable = [
         'session_id', 'player_id', 'display_name_snapshot',
         'initials_snapshot', 'avatar_color_index_snapshot',
-        'role', 'source', 'status', 'joined_at',
+        'role', 'source', 'status', 'joined_at', 'session_team_id',
     ];
 
     protected function casts(): array
@@ -42,6 +42,14 @@ class SessionParticipant extends Model
     public function player(): BelongsTo
     {
         return $this->belongsTo(Player::class);
+    }
+
+    /**
+     * The fixed partnership this player belongs to, for team_* formats.
+     */
+    public function team(): BelongsTo
+    {
+        return $this->belongsTo(SessionTeam::class, 'session_team_id');
     }
 
     public function standing(): HasOne

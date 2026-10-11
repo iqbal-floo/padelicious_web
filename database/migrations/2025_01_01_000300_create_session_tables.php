@@ -32,10 +32,7 @@ return new class extends Migration
               ('team_mexicano',       'Team Mexicano',          'Mexicano',  true,  false, false, 5),
               ('mixicano',            'Mixicano',               'Mexicano',  false, true,  false, 6),
               ('koth',                'King of the Court',      'KOTH',      false, false, false, 7),
-              ('team_koth',           'Team King of the Court', 'KOTH',      true,  false, false, 8),
-              ('club_team_americano', 'Club Team Americano',    'Club',      true,  false, true,  9),
-              ('club_americano',      'Club Americano',         'Club',      false, false, true, 10),
-              ('club_mexicano',       'Club Mexicano',          'Club',      false, false, true, 11);
+              ('team_koth',           'Team King of the Court', 'KOTH',      true,  false, false, 8);
 
             CREATE TABLE sessions (
               id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),

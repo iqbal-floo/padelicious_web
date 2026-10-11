@@ -27,6 +27,7 @@ generic message (it does not reveal whether the email exists).
 | POST | `/auth/login` | Issue token |
 | POST | `/auth/google` | Exchange a Google access token for an API token. `503` until credentials are configured — see `docs/google-sso.md` |
 | GET | `/auth/me` | Current user + linked player profile |
+| PATCH | `/profile` | Update the signed-in user and their player profile (full_name, display_name, **gender**, skill_level, avatar_color_index) |
 | POST | `/auth/logout` | Revokes only the calling token |
 
 ### Registering
@@ -47,8 +48,19 @@ profile is what sessions, standings and club membership reference. The
 display name is the first word of the full name and initials are derived
 from it, so "Iqbal Ramadhan" becomes `Iqbal` / `IR`.
 
+`gender` is optional (`male`, `female`, `other`, `undisclosed`) and
+defaults to `undisclosed`. The mixed formats require `male` or `female`
+for every participant, so an existing account sets it via
+`PATCH /profile`.
+
 Email uniqueness is case-insensitive (the column is `citext`). Register
 and login are each throttled to 6 requests/minute.
+
+### Match types
+
+There are **8**: americano, team_americano, mix_americano, mexicano,
+team_mexicano, mixicano, koth, team_koth. The three `club_*` types were
+removed — see `docs/round-generation.md`.
 
 ## Resources
 

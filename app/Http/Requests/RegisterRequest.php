@@ -2,7 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\PlayerGender;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 
 class RegisterRequest extends FormRequest
@@ -19,6 +21,8 @@ class RegisterRequest extends FormRequest
             // The client asks for "at least 6 characters"; keep them aligned.
             'password' => ['required', 'confirmed', Password::min(6)],
             'phone' => ['sometimes', 'nullable', 'string', 'max:32'],
+            // Optional at sign-up; required later to join a mixed format.
+            'gender' => ['sometimes', 'nullable', Rule::enum(PlayerGender::class)],
             'device_name' => ['sometimes', 'string', 'max:255'],
             'accepted_terms' => ['sometimes', 'boolean'],
         ];
