@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ClubController;
 use App\Http\Controllers\Api\LeaderboardController;
+use App\Http\Controllers\Api\LiveScoreController;
 use App\Http\Controllers\Api\MatchTypeController;
 use App\Http\Controllers\Api\ParticipantController;
 use App\Http\Controllers\Api\PlayerController;
@@ -22,6 +23,12 @@ use Illuminate\Support\Facades\Route;
 */
 
 Route::prefix('v1')->group(function () {
+    // Public live score: a spectator needs only the match uuid. Read-only.
+    Route::get('live/matches/{match}', [LiveScoreController::class, 'show'])
+        ->name('api.live.match');
+    Route::get('live/matches/{match}/stream', [LiveScoreController::class, 'stream'])
+        ->name('api.live.match.stream');
+
     Route::post('auth/login', [AuthController::class, 'login'])
         ->middleware('throttle:6,1')
         ->name('api.auth.login');

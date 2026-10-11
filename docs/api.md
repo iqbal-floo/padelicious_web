@@ -43,6 +43,25 @@ All read endpoints require authentication and return `401` otherwise.
 | GET | `/sessions/{id}/rounds` | Rounds → matches → teams → players (live court data) |
 | GET | `/sessions/{id}/leaderboard` | Standings, ordered by the session's `leaderboard_sort` |
 
+## Public live score (no auth)
+
+A spectator needs only the match uuid — unguessable, and read-only.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/live/matches/{id}` | One score snapshot as JSON |
+| GET | `/api/v1/live/matches/{id}/stream` | **Server-Sent Events**; pushes only when the score changes |
+| GET | `/live/{id}` | The shareable spectator scoreboard page (HTML) |
+
+The SSE stream emits `event: score` with the same payload as the snapshot,
+plus `: keep-alive` comments to hold the connection through proxies. It
+reconnects client-side automatically and closes itself after 30 minutes.
+
+**Serving the stream needs a multi-worker server.** `php artisan serve` is
+single-threaded: one open SSE connection blocks every other request. Use
+`PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8000 -t public public/index.php`
+locally, or php-fpm/Octane in production.
+
 ## Writes
 
 Every write below requires the caller to be the session's **host** or a
