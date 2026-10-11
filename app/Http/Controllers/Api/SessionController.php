@@ -5,10 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Enums\ParticipantStatus;
 use App\Enums\SessionStatus;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\StoreSessionRequest;
 use App\Http\Resources\SessionResource;
 use App\Models\Session;
+use App\Services\SessionBuilder;
+use App\Services\StandingsCalculator;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Symfony\Component\HttpFoundation\Response;
 
 class SessionController extends Controller
 {
@@ -71,5 +76,65 @@ class SessionController extends Controller
         ]);
 
         return new SessionResource($session);
+    }
+
+    /**
+     * POST /api/v1/sessions
+     */
+    public function store(StoreSessionRequest $request, SessionBuilder $builder): JsonResponse
+    {
+        $player = $request->user()->player;
+
+        if (! $player) {
+            return response()->json(
+                ['message' => 'Your account has no player profile yet.'],
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+            );
+        }
+
+        $data = $request->safe()->except('participants');
+        $participants = $request->input('participants', []);
+
+        $session = $builder->create($data, $participants, $player->id);
+
+        return (new SessionResource($session->load([
+            'matchType', 'club', 'host', 'participants.player',
+        ])))->response()->setStatusCode(Response::HTTP_CREATED);
+    }
+
+    /**
+     * POST /api/v1/sessions/{session}/complete
+     */
+    public function complete(
+        Request $request,
+        Session $session,
+        StandingsCalculator $standings,
+    ): SessionResource {
+        $this->authorize('manage', $session);
+
+        $standings->recalculate($session);
+
+        $session->forceFill([
+            'status' => SessionStatus::Completed,
+            'completed_at' => now(),
+        ])->save();
+
+        return new SessionResource($session->load(['matchType', 'club', 'host']));
+    }
+
+    /**
+     * DELETE /api/v1/sessions/{session} — cancels rather than deletes, so
+     * the match history survives.
+     */
+    public function cancel(Request $request, Session $session): SessionResource
+    {
+        $this->authorize('manage', $session);
+
+        $session->forceFill([
+            'status' => SessionStatus::Cancelled,
+            'completed_at' => now(),
+        ])->save();
+
+        return new SessionResource($session->load(['matchType', 'club', 'host']));
     }
 }

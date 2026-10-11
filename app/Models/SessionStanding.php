@@ -23,6 +23,22 @@ class SessionStanding extends Model
      */
     protected $guarded = ['win_rate'];
 
+    /**
+     * Composite primary key: Eloquent assumes a single "id", which would
+     * build `where id is null` on update. Constrain by both key columns.
+     */
+    protected function setKeysForSaveQuery($query)
+    {
+        return $query
+            ->where('session_id', $this->getAttribute('session_id'))
+            ->where('participant_id', $this->getAttribute('participant_id'));
+    }
+
+    protected function setKeysForSelectQuery($query)
+    {
+        return $this->setKeysForSaveQuery($query);
+    }
+
     protected function casts(): array
     {
         return [

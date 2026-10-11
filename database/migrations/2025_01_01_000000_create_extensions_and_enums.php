@@ -45,7 +45,18 @@ return new class extends Migration
 
         foreach ($this->enums as $name => $values) {
             $labels = implode(', ', array_map(fn ($v) => "'{$v}'", $values));
-            DB::statement("CREATE TYPE {$name} AS ENUM ({$labels})");
+
+            // Idempotent: Postgres has no CREATE TYPE IF NOT EXISTS, and a
+            // rolled-back test database can still hold the type.
+            DB::unprepared(<<<SQL
+                DO $$
+                BEGIN
+                  CREATE TYPE {$name} AS ENUM ({$labels});
+                EXCEPTION
+                  WHEN duplicate_object THEN NULL;
+                END
+                $$;
+            SQL);
         }
 
         DB::unprepared(<<<'SQL'

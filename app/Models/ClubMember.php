@@ -20,6 +20,21 @@ class ClubMember extends Model
 
     protected $fillable = ['club_id', 'player_id', 'role', 'status', 'joined_at', 'left_at'];
 
+    /**
+     * Composite primary key (club_id, player_id); see SessionStanding.
+     */
+    protected function setKeysForSaveQuery($query)
+    {
+        return $query
+            ->where('club_id', $this->getAttribute('club_id'))
+            ->where('player_id', $this->getAttribute('player_id'));
+    }
+
+    protected function setKeysForSelectQuery($query)
+    {
+        return $this->setKeysForSaveQuery($query);
+    }
+
     protected function casts(): array
     {
         return [

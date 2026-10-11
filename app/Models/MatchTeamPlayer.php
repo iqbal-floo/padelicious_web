@@ -18,6 +18,21 @@ class MatchTeamPlayer extends Model
 
     protected $fillable = ['match_team_id', 'participant_id', 'slot'];
 
+    /**
+     * Composite primary key (match_team_id, slot); see SessionStanding.
+     */
+    protected function setKeysForSaveQuery($query)
+    {
+        return $query
+            ->where('match_team_id', $this->getAttribute('match_team_id'))
+            ->where('slot', $this->getAttribute('slot'));
+    }
+
+    protected function setKeysForSelectQuery($query)
+    {
+        return $this->setKeysForSaveQuery($query);
+    }
+
     protected function casts(): array
     {
         return ['slot' => 'integer'];
