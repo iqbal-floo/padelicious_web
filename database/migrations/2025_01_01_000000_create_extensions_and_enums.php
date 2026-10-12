@@ -28,7 +28,7 @@ return new class extends Migration
         'session_status' => ['draft', 'active', 'completed', 'cancelled'],
         'participant_role' => ['host', 'admin', 'player'],
         'participant_source' => ['manual', 'club', 'reclub'],
-        'participant_status' => ['active', 'queued', 'withdrawn'],
+        'participant_status' => ['active', 'queued', 'withdrawn', 'no_show'],
         'round_status' => ['pending', 'in_progress', 'completed'],
         'match_status' => ['scheduled', 'live', 'finished', 'abandoned'],
         'team_side' => ['a', 'b'],

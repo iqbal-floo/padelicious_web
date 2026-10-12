@@ -25,7 +25,7 @@ class Session extends Model
         'club_id', 'host_player_id', 'name', 'icon', 'match_type_code',
         'scheduled_date', 'court_count', 'scoring_type', 'points_target',
         'tennis_mode', 'golden_point', 'leaderboard_sort', 'status',
-        'started_at', 'completed_at',
+        'started_at', 'completed_at', 'continuous_play',
     ];
 
     protected function casts(): array
@@ -39,6 +39,7 @@ class Session extends Model
             'leaderboard_sort' => LeaderboardSort::class,
             'status' => SessionStatus::class,
             'golden_point' => 'boolean',
+            'continuous_play' => 'boolean',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
         ];
