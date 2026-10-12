@@ -17,6 +17,7 @@ class ProfileApiTest extends TestCase
     {
         $this->postJson('/api/v1/auth/register', [
             'full_name' => 'Dina Putri',
+            'username' => 'dina.putri',
             'email' => 'dina@example.com',
             'password' => 'secret123',
             'password_confirmation' => 'secret123',
@@ -30,6 +31,7 @@ class ProfileApiTest extends TestCase
     {
         $this->postJson('/api/v1/auth/register', [
             'full_name' => 'No Gender',
+            'username' => 'no.gender',
             'email' => 'none@example.com',
             'password' => 'secret123',
             'password_confirmation' => 'secret123',
@@ -42,6 +44,7 @@ class ProfileApiTest extends TestCase
     {
         $this->postJson('/api/v1/auth/register', [
             'full_name' => 'Bad Gender',
+            'username' => 'bad.gender',
             'email' => 'bad@example.com',
             'password' => 'secret123',
             'password_confirmation' => 'secret123',

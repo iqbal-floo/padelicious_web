@@ -1,0 +1,35 @@
+name: Deploy Padelicious Production
+
+on:
+  push:
+    branches:
+      - main
+
+# One deploy at a time; a newer push waits rather than racing the git pull.
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v1.2.4
+        with:
+          host: ${{ secrets.SSH_SERVER }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            set -e
+            cd ${{ secrets.DEPLOYMENT_PATH }}
+            git pull origin main
+            composer install --optimize-autoloader --no-dev --no-interaction
+            if command -v npm >/dev/null 2>&1; then
+              npm ci && npm run build
+            fi
+            php artisan migrate --force
+            php artisan optimize

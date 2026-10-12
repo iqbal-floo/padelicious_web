@@ -2,10 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Enums\MatchStatus;
 use App\Enums\PlayerGender;
+use App\Enums\RoundStatus;
+use App\Enums\TeamSide;
 use App\Models\Player;
 use App\Models\Round;
 use App\Models\Session;
+use App\Models\SessionParticipant;
 use App\Models\SessionTeam;
 use App\Models\User;
 use App\Services\SessionBuilder;
@@ -293,5 +297,47 @@ class TeamFormatTest extends TestCase
         ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('match_type_code');
+    }
+
+    // ---- team_americano: opponents rotate -----------------------------------
+
+    public function test_team_americano_rotates_opponents_until_every_team_has_met(): void
+    {
+        // Host + 7 = 8 players = 4 teams on 2 courts: three rounds cover
+        // all six possible matchups, so none may repeat before then.
+        $session = $this->makeSession('team_americano', $this->players(['A', 'B', 'C', 'D', 'E', 'F', 'G']), courts: 2);
+        $builder = app(SessionBuilder::class);
+        $standings = app(StandingsCalculator::class);
+
+        $met = [];
+
+        for ($r = 1; $r <= 3; $r++) {
+            $round = $builder->generateRound($session);
+
+            foreach ($round->matches as $match) {
+                $teamIds = $match->teams
+                    ->map(fn ($t) => SessionParticipant::query()->find($t->teamPlayers->first()->participant_id)->session_team_id)
+                    ->sort()
+                    ->values()
+                    ->implode('|');
+
+                $this->assertArrayNotHasKey($teamIds, $met, "round {$r} repeated a matchup that has already been played");
+                $met[$teamIds] = true;
+
+                // Finish the match so matches_played moves on.
+                $match->forceFill([
+                    'status' => MatchStatus::Finished,
+                    'games_a' => 6,
+                    'games_b' => 3,
+                    'winner_team' => TeamSide::A,
+                    'finished_at' => now(),
+                ])->save();
+            }
+
+            $round->forceFill(['status' => RoundStatus::Completed, 'completed_at' => now()])->save();
+            $standings->recalculate($session);
+        }
+
+        $this->assertCount(6, $met, 'after three rounds every pair of teams has met exactly once');
     }
 }

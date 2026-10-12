@@ -33,10 +33,11 @@ class SessionController extends Controller
         $sessions = Session::query()
             ->with(['matchType', 'club', 'host'])
             ->withCount([
+                // Players actually in: confirmed. Waitlist and requests
+                // are shown on the session itself.
                 'participants as participant_count' => fn ($q) => $q->where(
                     'status',
-                    '!=',
-                    ParticipantStatus::Withdrawn->value
+                    ParticipantStatus::Confirmed->value
                 ),
             ])
             ->when($request->filled('club_id'), fn ($q) => $q->where('club_id', $request->string('club_id')))
@@ -71,9 +72,16 @@ class SessionController extends Controller
             'host',
             'participants' => fn ($q) => $q
                 ->where('status', '!=', ParticipantStatus::Withdrawn->value)
-                ->orderBy('joined_at'),
+                // Everyone imported together shares a joined_at; without a
+                // tiebreak Postgres returns them in a different order after
+                // every update and the roster reshuffles under the host.
+                ->orderBy('joined_at')
+                ->orderBy('id'),
             'participants.player',
         ]);
+
+        // For is_creator, without a query per participant.
+        $session->participants->each->setRelation('session', $session);
 
         return new SessionResource($session);
     }

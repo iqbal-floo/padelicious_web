@@ -104,6 +104,7 @@ class DemoSessionSeeder extends Seeder
                     'initials_snapshot' => $player->initials,
                     'avatar_color_index_snapshot' => $player->avatar_color_index,
                     'role' => $i === 0 ? ParticipantRole::Host : ParticipantRole::Player,
+                    'tags' => $i === 0 ? ['host'] : [],
                     'source' => $i > 5 ? ParticipantSource::Reclub : ParticipantSource::Manual,
                 ]);
             }

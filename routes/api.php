@@ -5,9 +5,11 @@ use App\Http\Controllers\Api\ClubController;
 use App\Http\Controllers\Api\LeaderboardController;
 use App\Http\Controllers\Api\LiveScoreController;
 use App\Http\Controllers\Api\MatchTypeController;
+use App\Http\Controllers\Api\OrderOfPlayController;
 use App\Http\Controllers\Api\ParticipantController;
 use App\Http\Controllers\Api\PlayerController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\ReclubController;
 use App\Http\Controllers\Api\RoundController;
 use App\Http\Controllers\Api\ScoreController;
 use App\Http\Controllers\Api\SessionController;
@@ -63,6 +65,12 @@ Route::prefix('v1')->group(function () {
         Route::get('match-types', [MatchTypeController::class, 'index'])->name('api.match-types.index');
 
         Route::get('players', [PlayerController::class, 'index'])->name('api.players.index');
+        Route::post('players', [PlayerController::class, 'store'])->name('api.players.store');
+
+        // Reclub meet roster import (reads reclub.co/m/{code})
+        Route::post('reclub/import', [ReclubController::class, 'import'])
+            ->middleware('throttle:20,1')
+            ->name('api.reclub.import');
         Route::get('players/{player}', [PlayerController::class, 'show'])->name('api.players.show');
 
         Route::get('clubs', [ClubController::class, 'index'])->name('api.clubs.index');
@@ -78,16 +86,21 @@ Route::prefix('v1')->group(function () {
         // Roster
         Route::post('sessions/{session}/participants', [ParticipantController::class, 'store'])->name('api.participants.store');
         Route::delete('sessions/{session}/participants/{participant}', [ParticipantController::class, 'destroy'])->name('api.participants.destroy');
+        Route::patch('sessions/{session}/participants/{participant}', [ParticipantController::class, 'update'])->name('api.participants.update');
+        Route::post('sessions/{session}/join', [ParticipantController::class, 'join'])->name('api.sessions.join');
 
         // Rounds & matches
         Route::get('sessions/{session}/rounds', [RoundController::class, 'index'])->name('api.sessions.rounds');
         Route::post('sessions/{session}/rounds', [RoundController::class, 'store'])->name('api.rounds.store');
         Route::post('rounds/{round}/complete', [RoundController::class, 'complete'])->name('api.rounds.complete');
+        Route::post('rounds/{round}/reopen', [RoundController::class, 'reopen'])->name('api.rounds.reopen');
 
         // Scoring — the match_points event log
         Route::post('matches/{match}/points', [ScoreController::class, 'store'])->name('api.matches.points.store');
         Route::delete('matches/{match}/points', [ScoreController::class, 'destroy'])->name('api.matches.points.undo');
+        Route::post('matches/{match}/reset', [ScoreController::class, 'reset'])->name('api.matches.reset');
 
         Route::get('sessions/{session}/leaderboard', [LeaderboardController::class, 'index'])->name('api.sessions.leaderboard');
+        Route::get('sessions/{session}/order-of-play', [OrderOfPlayController::class, 'show'])->name('api.sessions.order-of-play');
     });
 });

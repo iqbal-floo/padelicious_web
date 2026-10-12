@@ -19,6 +19,11 @@ class SessionParticipantResource extends JsonResource
             'role' => $this->role?->value,
             'source' => $this->source?->value,
             'status' => $this->status?->value,
+            'tags' => array_values($this->tags ?? []),
+            // The creator's host tag cannot be removed; the app greys it out.
+            'is_creator' => $this->relationLoaded('session')
+                ? $this->player_id === $this->session->host_player_id
+                : null,
             'joined_at' => $this->joined_at?->toIso8601String(),
             'player' => new PlayerResource($this->whenLoaded('player')),
         ];

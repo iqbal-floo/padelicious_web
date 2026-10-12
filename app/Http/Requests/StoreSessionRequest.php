@@ -36,6 +36,8 @@ class StoreSessionRequest extends FormRequest
             'participants' => ['sometimes', 'array', 'max:64'],
             'participants.*.player_id' => ['required', 'uuid', 'exists:players,id'],
             'participants.*.source' => ['sometimes', 'string', 'in:manual,club,reclub'],
+            // Imported waitlists stay waitlisted; everyone else is confirmed.
+            'participants.*.status' => ['sometimes', 'string', 'in:confirmed,waitlisted'],
         ];
     }
 

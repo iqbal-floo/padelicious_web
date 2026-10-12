@@ -23,10 +23,19 @@ class SessionResource extends JsonResource
             'leaderboard_sort' => $this->leaderboard_sort?->value,
             'started_at' => $this->started_at?->toIso8601String(),
             'completed_at' => $this->completed_at?->toIso8601String(),
+            'order_of_play_url' => route('sessions.order-of-play', $this->resource),
             'match_type' => new MatchTypeResource($this->whenLoaded('matchType')),
             'club' => new ClubResource($this->whenLoaded('club')),
             'host' => new PlayerResource($this->whenLoaded('host')),
             'participants' => SessionParticipantResource::collection($this->whenLoaded('participants')),
+            // What the signed-in user may do here, so the app can show or
+            // hide host-only actions.
+            'can_manage' => (bool) $request->user()?->can('manage', $this->resource),
+            'my_participant' => $this->whenLoaded('participants', function () use ($request) {
+                $mine = $this->participants->firstWhere('player_id', $request->user()?->player?->id);
+
+                return $mine ? ['id' => $mine->id, 'status' => $mine->status?->value] : null;
+            }),
             'participant_count' => $this->when(
                 isset($this->participant_count),
                 fn () => (int) $this->participant_count

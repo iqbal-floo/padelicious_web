@@ -19,6 +19,7 @@ class RegistrationApiTest extends TestCase
     {
         return array_merge([
             'full_name' => 'Iqbal Ramadhan',
+            'username' => 'iqbal.ramadhan',
             'email' => 'new.user@example.com',
             'password' => 'secret123',
             'password_confirmation' => 'secret123',
@@ -36,6 +37,7 @@ class RegistrationApiTest extends TestCase
             ->assertJsonPath('user.status', 'active')
             // A player profile is created in the same transaction.
             ->assertJsonPath('user.player.display_name', 'Iqbal')
+            ->assertJsonPath('user.player.username', 'iqbal.ramadhan')
             ->assertJsonPath('user.player.initials', 'IR');
 
         $this->assertNotEmpty($response->json('token'));
@@ -153,11 +155,13 @@ class RegistrationApiTest extends TestCase
         for ($i = 0; $i < 6; $i++) {
             $this->postJson('/api/v1/auth/register', $this->payload([
                 'email' => "user{$i}@example.com",
+                'username' => "user{$i}",
             ]))->assertCreated();
         }
 
         $this->postJson('/api/v1/auth/register', $this->payload([
             'email' => 'seventh@example.com',
+            'username' => 'seventh',
         ]))->assertStatus(429);
     }
 
@@ -188,5 +192,41 @@ class RegistrationApiTest extends TestCase
         $this->postJson('/api/v1/auth/google', [])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('access_token');
+    }
+
+    // ---- username: the unique handle ----------------------------------------
+
+    public function test_a_username_is_required(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->payload(['username' => null]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['username']);
+    }
+
+    public function test_usernames_are_unique_case_insensitively_but_names_may_repeat(): void
+    {
+        $this->postJson('/api/v1/auth/register', $this->payload())->assertCreated();
+
+        // Same full name, different email and username: fine.
+        $this->postJson('/api/v1/auth/register', $this->payload([
+            'email' => 'other@example.com',
+            'username' => 'iqbal.r2',
+        ]))->assertCreated()->assertJsonPath('user.full_name', 'Iqbal Ramadhan');
+
+        // Same username in different case: taken.
+        $this->postJson('/api/v1/auth/register', $this->payload([
+            'email' => 'third@example.com',
+            'username' => 'Iqbal.Ramadhan',
+        ]))->assertStatus(422)->assertJsonPath('errors.username.0', 'This username is already taken.');
+
+        $this->assertSame(2, User::query()->where('full_name', 'Iqbal Ramadhan')->count());
+    }
+
+    public function test_a_guest_player_s_username_cannot_be_registered_either(): void
+    {
+        Player::query()->create(['display_name' => 'Hardian', 'username' => 'hardian', 'initials' => 'HA']);
+
+        $this->postJson('/api/v1/auth/register', $this->payload(['username' => 'HARDIAN']))
+            ->assertStatus(422)->assertJsonValidationErrors(['username']);
     }
 }

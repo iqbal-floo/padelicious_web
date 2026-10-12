@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\MatchStatus;
 use App\Enums\TeamSide;
+use App\Enums\TennisMode;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -22,7 +23,7 @@ class MatchGame extends Model
     protected $fillable = [
         'round_id', 'court_id', 'status', 'games_a', 'games_b',
         'points_a', 'points_b', 'serving_team', 'winner_team',
-        'started_at', 'finished_at',
+        'started_at', 'finished_at', 'tennis_mode',
     ];
 
     protected function casts(): array
@@ -31,6 +32,8 @@ class MatchGame extends Model
             'status' => MatchStatus::class,
             'serving_team' => TeamSide::class,
             'winner_team' => TeamSide::class,
+            // Optional per-match override of the session's format.
+            'tennis_mode' => TennisMode::class,
             'games_a' => 'integer',
             'games_b' => 'integer',
             'started_at' => 'datetime',

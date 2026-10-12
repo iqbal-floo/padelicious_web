@@ -6,10 +6,13 @@ use App\Enums\MatchStatus;
 use App\Enums\ParticipantRole;
 use App\Enums\ParticipantSource;
 use App\Enums\ParticipantStatus;
+use App\Enums\ParticipantTag;
 use App\Enums\PlayerGender;
 use App\Enums\RoundStatus;
 use App\Enums\SessionStatus;
 use App\Enums\TeamSide;
+use App\Enums\TennisMode;
+use App\Exceptions\InvalidRoundException;
 use App\Models\Court;
 use App\Models\MatchGame;
 use App\Models\MatchTeam;
@@ -63,14 +66,24 @@ class SessionBuilder
             }
 
             foreach ($rows as $entry) {
-                $this->addParticipant(
+                $participant = $this->addParticipant(
                     $session,
                     $entry['player_id'],
                     $entry['role'] ?? ParticipantRole::Player,
                     isset($entry['source'])
                         ? ParticipantSource::from($entry['source'])
                         : ParticipantSource::Manual,
+                    // The creator always plays; others may arrive waitlisted
+                    // (a Reclub waitlist, for example).
+                    $entry['player_id'] !== $hostPlayerId && isset($entry['status'])
+                        ? ParticipantStatus::from($entry['status'])
+                        : ParticipantStatus::Confirmed,
                 );
+
+                // The creator plays by default and is the first host.
+                if ($entry['player_id'] === $hostPlayerId) {
+                    $participant->forceFill(['tags' => [ParticipantTag::Host->value]])->save();
+                }
             }
 
             return $session->refresh();
@@ -85,6 +98,7 @@ class SessionBuilder
         string $playerId,
         ParticipantRole|string $role = ParticipantRole::Player,
         ParticipantSource|string $source = ParticipantSource::Manual,
+        ParticipantStatus $status = ParticipantStatus::Confirmed,
     ): SessionParticipant {
         $player = Player::query()->findOrFail($playerId);
 
@@ -96,7 +110,7 @@ class SessionBuilder
         if ($existing) {
             // Re-joining after withdrawing reactivates the same row.
             if ($existing->status === ParticipantStatus::Withdrawn) {
-                $existing->forceFill(['status' => ParticipantStatus::Active])->save();
+                $existing->forceFill(['status' => $status])->save();
 
                 return $existing;
             }
@@ -113,7 +127,10 @@ class SessionBuilder
             'avatar_color_index_snapshot' => $player->avatar_color_index,
             'role' => $role instanceof ParticipantRole ? $role : ParticipantRole::from($role),
             'source' => $source instanceof ParticipantSource ? $source : ParticipantSource::from($source),
-            'status' => ParticipantStatus::Active,
+            // Host-added and Reclub-imported players are confirmed; a
+            // player asking to join comes in as requested.
+            'status' => $status,
+            'tags' => [],
             'joined_at' => now(),
         ]);
 
@@ -158,9 +175,14 @@ class SessionBuilder
             $matchTypeCategory = $session->matchType?->category;
 
             $roster = $session->participants()
-                ->where('status', ParticipantStatus::Active->value)
+                // Confirmed and not marked no-show.
+                ->eligible()
                 // player is needed for the mixed-gender constraint.
                 ->with('player')
+                // Join order is the seeding for round 1 and the order
+                // fixed pairs are formed in, so make it explicit.
+                ->orderBy('joined_at')
+                ->orderBy('id')
                 ->get();
 
             // One comparator returning a sortable tuple: passing an ARRAY of
@@ -224,38 +246,229 @@ class SessionBuilder
             };
 
             foreach ($pairings as $i => [$sideA, $sideB]) {
-                $match = MatchGame::query()->create([
-                    'round_id' => $round->id,
-                    'court_id' => $courts[$i]->id,
-                    'status' => MatchStatus::Scheduled,
-                    'serving_team' => TeamSide::A,
-                ]);
+                $this->persistMatch($round, $courts[$i], $sideA, $sideB);
+            }
 
-                foreach ([[TeamSide::A, $sideA], [TeamSide::B, $sideB]] as [$side, $members]) {
-                    $team = MatchTeam::query()->create([
-                        'match_id' => $match->id,
-                        'side' => $side,
-                    ]);
+            $this->activate($session);
 
-                    foreach (array_values($members) as $slot => $participant) {
-                        MatchTeamPlayer::query()->create([
-                            'match_team_id' => $team->id,
-                            'participant_id' => $participant->id,
-                            'slot' => $slot + 1,
-                        ]);
+            return $round->load('matches.teams.players');
+        });
+    }
+
+    /**
+     * Enter a round by hand: the host names the court and the four players
+     * of every match. This is how a pre-written schedule (an inter-club
+     * sparring sheet) or a hand-picked Mexicano round gets in.
+     *
+     * Rounds entered while another is still open queue as `pending` and
+     * are promoted when the open one completes, so a whole day can be
+     * keyed in before the first ball.
+     *
+     * @param  list<array{court: int, team_a: list<string>, team_b: list<string>, tennis_mode?: ?string}>  $matches
+     *
+     * @throws InvalidRoundException
+     */
+    public function createRound(Session $session, array $matches, ?int $roundNumber = null): Round
+    {
+        return DB::transaction(function () use ($session, $matches, $roundNumber) {
+            $session = Session::query()
+                ->whereKey($session->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $courts = $session->courts()->get()->keyBy('court_number');
+
+            $all = $session->participants()->get()->keyBy('id');
+            $roster = $session->participants()->eligible()->get()->keyBy('id');
+
+            $number = $roundNumber ?? (int) $session->rounds()->max('round_number') + 1;
+
+            if ($session->rounds()->where('round_number', $number)->exists()) {
+                throw new InvalidRoundException("Round {$number} already exists.");
+            }
+
+            $usedCourts = [];
+            $listed = [];
+            $prepared = [];
+
+            foreach (array_values($matches) as $i => $entry) {
+                $label = 'Match '.($i + 1);
+                $courtNumber = (int) $entry['court'];
+
+                $court = $courts[$courtNumber]
+                    ?? throw new InvalidRoundException("{$label}: court {$courtNumber} does not exist in this session.");
+
+                if (isset($usedCourts[$courtNumber])) {
+                    throw new InvalidRoundException("{$label}: court {$courtNumber} is used twice in this round.");
+                }
+                $usedCourts[$courtNumber] = true;
+
+                $sides = [];
+
+                foreach (['team_a', 'team_b'] as $key) {
+                    $members = [];
+
+                    foreach ($entry[$key] as $id) {
+                        $participant = $roster[$id]
+                            ?? throw new InvalidRoundException($this->ineligibleReason($label, $id, $all[$id] ?? null));
+
+                        if (isset($listed[$id])) {
+                            throw new InvalidRoundException(
+                                "{$label}: {$participant->display_name_snapshot} is listed twice in this round."
+                            );
+                        }
+                        $listed[$id] = true;
+                        $members[] = $participant;
+                    }
+
+                    $sides[] = $members;
+                }
+
+                $prepared[] = [
+                    'court' => $court,
+                    'sides' => $sides,
+                    'tennis_mode' => isset($entry['tennis_mode']) ? TennisMode::from($entry['tennis_mode']) : null,
+                ];
+            }
+
+            // Fixed-pair formats: a player keeps the partner they started with.
+            if ($session->matchType?->is_team_based) {
+                foreach ($prepared as $match) {
+                    foreach ($match['sides'] as [$a, $b]) {
+                        $this->ensurePartnership($session, $a, $b);
                     }
                 }
             }
 
-            if ($session->status === SessionStatus::Draft) {
-                $session->forceFill([
-                    'status' => SessionStatus::Active,
-                    'started_at' => $session->started_at ?? now(),
-                ])->save();
+            $open = $session->rounds()
+                ->where('status', '!=', RoundStatus::Completed->value)
+                ->exists();
+
+            $round = Round::query()->create([
+                'session_id' => $session->id,
+                'round_number' => $number,
+                'status' => $open ? RoundStatus::Pending : RoundStatus::InProgress,
+                'generated_at' => now(),
+            ]);
+
+            foreach ($prepared as $match) {
+                $this->persistMatch($round, $match['court'], $match['sides'][0], $match['sides'][1], $match['tennis_mode']);
             }
+
+            $this->activate($session);
 
             return $round->load('matches.teams.players');
         });
+    }
+
+    /**
+     * Why a listed player cannot be put into a match, in words a host can act on.
+     */
+    private function ineligibleReason(string $label, string $id, ?SessionParticipant $participant): string
+    {
+        if (! $participant) {
+            return "{$label}: {$id} is not on this session's roster.";
+        }
+
+        $name = $participant->display_name_snapshot;
+
+        if ($participant->hasTag(ParticipantTag::NoShow)) {
+            return "{$label}: {$name} is marked no-show.";
+        }
+
+        return match ($participant->status) {
+            ParticipantStatus::Waitlisted => "{$label}: {$name} is waitlisted. Confirm them first.",
+            ParticipantStatus::Requested => "{$label}: {$name} has only requested to join. Confirm them first.",
+            ParticipantStatus::Withdrawn => "{$label}: {$name} has withdrawn from this session.",
+            default => "{$label}: {$name} cannot play right now.",
+        };
+    }
+
+    /**
+     * One match on one court with its two sides, as the scoring and
+     * export code expect to find it.
+     *
+     * @param  list<SessionParticipant>  $sideA
+     * @param  list<SessionParticipant>  $sideB
+     */
+    private function persistMatch(
+        Round $round,
+        Court $court,
+        array $sideA,
+        array $sideB,
+        ?TennisMode $tennisMode = null,
+    ): MatchGame {
+        $match = MatchGame::query()->create([
+            'round_id' => $round->id,
+            'court_id' => $court->id,
+            'status' => MatchStatus::Scheduled,
+            'serving_team' => TeamSide::A,
+            'tennis_mode' => $tennisMode,
+        ]);
+
+        foreach ([[TeamSide::A, $sideA], [TeamSide::B, $sideB]] as [$side, $members]) {
+            $team = MatchTeam::query()->create([
+                'match_id' => $match->id,
+                'side' => $side,
+            ]);
+
+            foreach (array_values($members) as $slot => $participant) {
+                MatchTeamPlayer::query()->create([
+                    'match_team_id' => $team->id,
+                    'participant_id' => $participant->id,
+                    'slot' => $slot + 1,
+                ]);
+            }
+        }
+
+        return $match;
+    }
+
+    /**
+     * The first round, however it was made, starts the session.
+     */
+    private function activate(Session $session): void
+    {
+        if ($session->status === SessionStatus::Draft) {
+            $session->forceFill([
+                'status' => SessionStatus::Active,
+                'started_at' => $session->started_at ?? now(),
+            ])->save();
+        }
+    }
+
+    /**
+     * Record (or check) a fixed partnership for a hand-entered match.
+     *
+     * @throws InvalidRoundException when either player already has a different partner
+     */
+    private function ensurePartnership(Session $session, SessionParticipant $a, SessionParticipant $b): void
+    {
+        if ($a->session_team_id !== null || $b->session_team_id !== null) {
+            if ($a->session_team_id === $b->session_team_id) {
+                return;
+            }
+
+            [$fixed, $other] = $a->session_team_id !== null ? [$a, $b] : [$b, $a];
+            $partner = SessionParticipant::query()
+                ->where('session_team_id', $fixed->session_team_id)
+                ->whereKeyNot($fixed->id)
+                ->value('display_name_snapshot');
+
+            throw new InvalidRoundException(
+                "{$fixed->display_name_snapshot} already partners {$partner} in this session and cannot play with {$other->display_name_snapshot}."
+            );
+        }
+
+        $team = SessionTeam::query()->create([
+            'session_id' => $session->id,
+            'team_number' => (int) SessionTeam::query()->where('session_id', $session->id)->max('team_number') + 1,
+            'name' => $a->display_name_snapshot.' / '.$b->display_name_snapshot,
+        ]);
+
+        foreach ([$a, $b] as $participant) {
+            $participant->forceFill(['session_team_id' => $team->id])->save();
+        }
     }
 
     /**
@@ -297,14 +510,91 @@ class SessionBuilder
             ->values()
             ->all();
 
-        $pairings = [];
         $playable = min($courtCount, intdiv(count($ordered), 2));
 
-        for ($i = 0; $i < $playable; $i++) {
-            $pairings[] = [$ordered[$i * 2], $ordered[$i * 2 + 1]];
+        if ($byRank) {
+            $pairings = [];
+
+            for ($i = 0; $i < $playable; $i++) {
+                $pairings[] = [$ordered[$i * 2], $ordered[$i * 2 + 1]];
+            }
+
+            return $pairings;
+        }
+
+        // Team Americano: the team that has played least takes the court
+        // first, against the available team it has met the fewest times.
+        // Without this, teams level on matches played were paired in
+        // roster order and met the same opponent every round.
+        $meetings = $this->teamMeetings($session);
+        $teamId = fn (array $members) => $members[0]->session_team_id;
+
+        $pairings = [];
+        $remaining = $ordered;
+
+        while (count($pairings) < $playable && count($remaining) >= 2) {
+            $home = array_shift($remaining);
+
+            $bestIndex = 0;
+            $fewest = PHP_INT_MAX;
+
+            foreach ($remaining as $index => $candidate) {
+                $met = $meetings[$this->meetingKey($teamId($home), $teamId($candidate))] ?? 0;
+
+                // Strict <, so a tie keeps the candidate that has played least.
+                if ($met < $fewest) {
+                    $fewest = $met;
+                    $bestIndex = $index;
+                }
+            }
+
+            [$away] = array_splice($remaining, $bestIndex, 1);
+            $pairings[] = [$home, $away];
         }
 
         return $pairings;
+    }
+
+    /**
+     * How many times each pair of fixed teams has already met this session.
+     *
+     * @return array<string, int> meetingKey => count
+     */
+    private function teamMeetings(Session $session): array
+    {
+        $teamOf = SessionParticipant::query()
+            ->where('session_id', $session->id)
+            ->whereNotNull('session_team_id')
+            ->pluck('session_team_id', 'id');
+
+        $matches = MatchGame::query()
+            ->whereHas('round', fn ($q) => $q->where('session_id', $session->id))
+            ->with('teams.teamPlayers')
+            ->get();
+
+        $meetings = [];
+
+        foreach ($matches as $match) {
+            $teamIds = $match->teams
+                ->map(fn ($team) => $teamOf[$team->teamPlayers->first()?->participant_id] ?? null)
+                ->filter()
+                ->unique()
+                ->values();
+
+            if ($teamIds->count() !== 2) {
+                continue;
+            }
+
+            $key = $this->meetingKey($teamIds[0], $teamIds[1]);
+            $meetings[$key] = ($meetings[$key] ?? 0) + 1;
+        }
+
+        return $meetings;
+    }
+
+    private function meetingKey(string $a, string $b): string
+    {
+        return $a < $b ? "{$a}|{$b}" : "{$b}|{$a}";
     }
 
     /**

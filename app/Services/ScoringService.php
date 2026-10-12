@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\MatchStatus;
+use App\Enums\RoundStatus;
 use App\Enums\TeamSide;
 use App\Models\MatchGame;
 use App\Models\MatchPoint;
@@ -33,6 +34,8 @@ class ScoringService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            $this->assertRoundOpen($match);
+
             if ($match->status === MatchStatus::Finished) {
                 throw new RuntimeException('This match is already finished.');
             }
@@ -41,7 +44,9 @@ class ScoringService
                 throw new RuntimeException('This match was abandoned.');
             }
 
-            $goldenPoint = $match->round->session->golden_point;
+            $session = $match->round->session;
+            $goldenPoint = $session->golden_point;
+            $format = MatchFormat::forMatch($match);
 
             $before = [
                 'points_a' => $match->points_a,
@@ -51,7 +56,7 @@ class ScoringService
                 'serving' => $match->serving_team,
             ];
 
-            $after = PadelScoring::apply($before, $scorer, $goldenPoint);
+            $after = PadelScoring::apply($before, $scorer, $goldenPoint, $format);
 
             $nextSequence = (int) MatchPoint::query()
                 ->where('match_id', $match->id)
@@ -91,6 +96,8 @@ class ScoringService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            $this->assertRoundOpen($match);
+
             $last = MatchPoint::query()
                 ->where('match_id', $match->id)
                 ->whereNull('voided_at')
@@ -110,11 +117,65 @@ class ScoringService
     }
 
     /**
+     * Void every point of a match and put it back to not-started, so a
+     * wrong result can be re-entered from scratch. The events are voided,
+     * not deleted, so the log still shows what happened.
+     */
+    public function resetMatch(MatchGame $match): MatchGame
+    {
+        return DB::transaction(function () use ($match) {
+            $match = MatchGame::query()
+                ->whereKey($match->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $this->assertRoundOpen($match);
+
+            $first = MatchPoint::query()
+                ->where('match_id', $match->id)
+                ->orderBy('sequence')
+                ->first();
+
+            MatchPoint::query()
+                ->where('match_id', $match->id)
+                ->whereNull('voided_at')
+                ->update(['voided_at' => now()]);
+
+            $match->forceFill([
+                'points_a' => '0',
+                'points_b' => '0',
+                'games_a' => 0,
+                'games_b' => 0,
+                'serving_team' => $first?->serving_team ?? $match->serving_team,
+                'status' => MatchStatus::Scheduled,
+                'winner_team' => null,
+                'started_at' => null,
+                'finished_at' => null,
+            ])->save();
+
+            return $match->refresh();
+        });
+    }
+
+    /**
+     * A completed round is closed: its scores change only after the host
+     * reopens it, so a stray tap cannot rewrite a finished result.
+     */
+    private function assertRoundOpen(MatchGame $match): void
+    {
+        if ($match->round?->status === RoundStatus::Completed) {
+            throw new RuntimeException('This round is completed. Reopen it to change its scores.');
+        }
+    }
+
+    /**
      * Rebuild the cached games and points columns by replaying the log.
      */
     private function replay(MatchGame $match): void
     {
-        $goldenPoint = $match->round->session->golden_point;
+        $session = $match->round->session;
+        $goldenPoint = $session->golden_point;
+        $format = MatchFormat::forMatch($match);
 
         $state = [
             'points_a' => '0',
@@ -123,7 +184,7 @@ class ScoringService
             'games_b' => 0,
             'serving' => $match->serving_team,
             'game_won' => false,
-            'set_won' => false,
+            'match_won' => false,
             'winner' => null,
         ];
 
@@ -144,7 +205,7 @@ class ScoringService
             ->get();
 
         foreach ($events as $event) {
-            $state = PadelScoring::apply($state, $event->scoring_team, $goldenPoint);
+            $state = PadelScoring::apply($state, $event->scoring_team, $goldenPoint, $format);
         }
 
         $this->writeState($match, $state, reopening: true);
@@ -163,7 +224,7 @@ class ScoringService
             'serving_team' => $state['serving'],
         ];
 
-        if ($state['set_won']) {
+        if ($state['match_won']) {
             // matches_winner_only_when_finished requires both together.
             $attributes['status'] = MatchStatus::Finished;
             $attributes['winner_team'] = $state['winner'];

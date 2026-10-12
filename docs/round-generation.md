@@ -94,3 +94,28 @@ The three `club_*` types were **removed** (migration
 `requires_club` was unenforced, so a "club" session could be created with
 no club at all. `down()` restores them.
 
+## Team Americano: opponent rotation
+
+Teams are ordered by matches played (fewest first). The first team takes
+the court against the remaining team it has **met the fewest times**;
+ties keep the team that has played least. Repeat until the courts are
+full. Previously, teams level on matches played were paired in roster
+order, so with four teams on two courts the same two fixtures were
+generated every round.
+
+With 4 teams on 2 courts, rounds 1–3 cover all six matchups
+(`TeamFormatTest`). With more teams than court places the sit-out teams
+rotate by matches played and the round robin completes over more rounds;
+`scripts/simulate_sparring.php` reports how many it took and whether any
+matchup repeated.
+
+Team Mexicano is unchanged: strongest v strongest by combined points.
+
+## Hand-entered rounds (all formats)
+
+`SessionBuilder::createRound()` takes the host's own list of matches
+instead of generating one. It validates courts and players, records
+fixed partnerships for team formats, and queues the round as `pending`
+if another is still open — so a whole day's schedule can be keyed in
+before the first ball and the export printed in advance. Each match may
+carry its own `tennis_mode`. See docs/api.md "Entering a round by hand".

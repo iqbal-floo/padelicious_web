@@ -173,7 +173,7 @@ class PadelScoringTest extends TestCase
             goldenPoint: true
         );
 
-        $this->assertTrue($result['set_won']);
+        $this->assertTrue($result['match_won']);
         $this->assertSame(TeamSide::A, $result['winner']);
         $this->assertSame(6, $result['games_a']);
     }
@@ -186,7 +186,7 @@ class PadelScoringTest extends TestCase
             goldenPoint: true
         );
 
-        $this->assertFalse($result['set_won']);
+        $this->assertFalse($result['match_won']);
         $this->assertNull($result['winner']);
     }
 

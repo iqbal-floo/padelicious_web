@@ -12,7 +12,7 @@ use App\Models\User;
  */
 class PlayerProfileFactory
 {
-    public function forUser(User $user, ?PlayerGender $gender = null): Player
+    public function forUser(User $user, ?PlayerGender $gender = null, ?string $username = null): Player
     {
         if ($existing = Player::query()->where('user_id', $user->id)->first()) {
             // Fill in a gender we did not have before, but never overwrite
@@ -26,6 +26,8 @@ class PlayerProfileFactory
 
         return Player::query()->create([
             'user_id' => $user->id,
+            // Chosen at sign-up; social sign-ins get one from the email.
+            'username' => $username ?? Player::usernameFrom(strstr($user->email, '@', true) ?: $user->full_name),
             'display_name' => $this->displayName($user->full_name),
             'initials' => $this->initials($user->full_name),
             // Spread avatar colours deterministically across the 8 slots.

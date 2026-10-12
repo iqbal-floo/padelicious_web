@@ -72,6 +72,8 @@ class AuthController extends Controller
             'full_name' => $user->full_name,
             'phone' => $user->phone,
             'status' => $user->status?->value,
+            // Drives the client's "Member since" line.
+            'created_at' => $user->created_at?->toIso8601String(),
             'player' => $user->player ? new PlayerResource($user->player) : null,
         ]);
     }
@@ -118,6 +120,7 @@ class AuthController extends Controller
                 isset($data['gender']) && $data['gender'] !== null
                     ? PlayerGender::from($data['gender'])
                     : null,
+                $data['username'],
             );
 
             return $user;
@@ -244,6 +247,8 @@ class AuthController extends Controller
             'full_name' => $user->full_name,
             'phone' => $user->phone,
             'status' => $user->status?->value,
+            // Drives the client's "Member since" line.
+            'created_at' => $user->created_at?->toIso8601String(),
             'player' => $user->player ? new PlayerResource($user->player) : null,
         ];
     }

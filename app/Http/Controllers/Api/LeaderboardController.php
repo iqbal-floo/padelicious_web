@@ -23,6 +23,10 @@ class LeaderboardController extends Controller
 
         $standings = $session->standings()
             ->with('participant')
+            // rank is assigned by StandingsCalculator with its own tiebreak,
+            // so lead with it: otherwise players level on every key come
+            // back as #4, #1, #3, #2.
+            ->orderBy('rank')
             ->orderByDesc($primary)
             ->orderByDesc($primary === 'wins' ? 'points' : 'wins')
             ->orderByDesc('games_won')

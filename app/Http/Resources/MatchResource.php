@@ -18,6 +18,7 @@ class MatchResource extends JsonResource
             'points_b' => $this->points_b,
             'serving_team' => $this->serving_team?->value,
             'winner_team' => $this->winner_team?->value,
+            'tennis_mode' => $this->tennis_mode?->value,
             'started_at' => $this->started_at?->toIso8601String(),
             'finished_at' => $this->finished_at?->toIso8601String(),
             'court' => $this->whenLoaded('court', fn () => [

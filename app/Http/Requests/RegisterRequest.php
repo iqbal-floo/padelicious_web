@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\PlayerGender;
+use App\Models\Player;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -15,7 +16,9 @@ class RegisterRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // Names may repeat; the username is the unique handle.
             'full_name' => ['required', 'string', 'min:2', 'max:120'],
+            'username' => ['required', 'string', ...Player::USERNAME_RULES, 'unique:players,username'],
             // citext column, so uniqueness is already case-insensitive.
             'email' => ['required', 'email:rfc', 'max:255', 'unique:users,email'],
             // The client asks for "at least 6 characters"; keep them aligned.
@@ -35,6 +38,15 @@ class RegisterRequest extends FormRequest
     {
         return [
             'email.unique' => 'An account with this email already exists.',
+            'username.unique' => 'This username is already taken.',
+            'username.regex' => 'Usernames use lowercase letters, digits, dots and underscores (2–30 characters).',
         ];
+    }
+
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('username')) {
+            $this->merge(['username' => mb_strtolower(trim((string) $this->input('username')))]);
+        }
     }
 }

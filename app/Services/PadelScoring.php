@@ -17,6 +17,10 @@ use App\Enums\TeamSide;
  * The client has no rule for losing an advantage (it would index past the
  * end of its point sequence), so this implements the standard tennis
  * behaviour: the opponent scoring cancels the advantage back to 40-40.
+ *
+ * When the match itself ends is the MatchFormat's call: a set to six, a
+ * race to N, or a fixed total of N games. For an even total that ends
+ * level, one further golden point decides the match.
  */
 final class PadelScoring
 {
@@ -33,18 +37,41 @@ final class PadelScoring
      * Apply one point and return the resulting state.
      *
      * @param  array{points_a: string, points_b: string, games_a: int, games_b: int, serving: ?TeamSide}  $state
-     * @return array{points_a: string, points_b: string, games_a: int, games_b: int, serving: ?TeamSide, game_won: bool, set_won: bool, winner: ?TeamSide, is_game_point: bool, is_golden_point: bool}
+     * @return array{points_a: string, points_b: string, games_a: int, games_b: int, serving: ?TeamSide, game_won: bool, match_won: bool, winner: ?TeamSide, decider_pending: bool, is_game_point: bool, is_golden_point: bool}
      */
-    public static function apply(array $state, TeamSide $scorer, bool $goldenPoint): array
-    {
+    public static function apply(
+        array $state,
+        TeamSide $scorer,
+        bool $goldenPoint,
+        ?MatchFormat $format = null,
+    ): array {
+        $format ??= MatchFormat::set();
         $isA = $scorer === TeamSide::A;
-
-        $mine = $isA ? $state['points_a'] : $state['points_b'];
-        $theirs = $isA ? $state['points_b'] : $state['points_a'];
 
         $gamesA = $state['games_a'];
         $gamesB = $state['games_b'];
         $serving = $state['serving'] ?? null;
+
+        // Every game played and the score level: this one point settles
+        // the match. No game is added, so the sheet still reads 2-2.
+        if ($format->deciderDue($gamesA, $gamesB)) {
+            return [
+                'points_a' => '0',
+                'points_b' => '0',
+                'games_a' => $gamesA,
+                'games_b' => $gamesB,
+                'serving' => $serving,
+                'game_won' => false,
+                'match_won' => true,
+                'winner' => $scorer,
+                'decider_pending' => false,
+                'is_game_point' => true,
+                'is_golden_point' => true,
+            ];
+        }
+
+        $mine = $isA ? $state['points_a'] : $state['points_b'];
+        $theirs = $isA ? $state['points_b'] : $state['points_a'];
 
         // Was this a game-deciding point? (Recorded on the event log.)
         $atDeuce = $mine === '40' && $theirs === '40';
@@ -79,8 +106,7 @@ final class PadelScoring
             $serving = $serving === TeamSide::A ? TeamSide::B : TeamSide::A;
         }
 
-        $setWon = $gameWon
-            && ($gamesA >= self::GAMES_TO_WIN_SET || $gamesB >= self::GAMES_TO_WIN_SET);
+        $matchWon = $gameWon && $format->wonOnGames($gamesA, $gamesB);
 
         return [
             'points_a' => $pointsA,
@@ -89,8 +115,9 @@ final class PadelScoring
             'games_b' => $gamesB,
             'serving' => $serving,
             'game_won' => $gameWon,
-            'set_won' => $setWon,
-            'winner' => $setWon ? ($gamesA > $gamesB ? TeamSide::A : TeamSide::B) : null,
+            'match_won' => $matchWon,
+            'winner' => $matchWon ? ($gamesA > $gamesB ? TeamSide::A : TeamSide::B) : null,
+            'decider_pending' => $gameWon && $format->deciderDue($gamesA, $gamesB),
             'is_game_point' => $isGamePoint,
             'is_golden_point' => $isGoldenPoint,
         ];

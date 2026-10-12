@@ -25,6 +25,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             DemoSessionSeeder::class,
             MixedRosterSeeder::class,
+            SparringRosterSeeder::class,
         ]);
     }
 }

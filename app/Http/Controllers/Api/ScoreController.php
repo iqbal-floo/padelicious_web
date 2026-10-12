@@ -71,6 +71,28 @@ class ScoreController extends Controller
         return $this->matchResponse($match);
     }
 
+    /**
+     * POST /api/v1/matches/{match}/reset — voids every point.
+     */
+    public function reset(Request $request, MatchGame $match): Response
+    {
+        $session = $match->round->session;
+        $this->authorize('manage', $session);
+
+        try {
+            $match = $this->scoring->resetMatch($match);
+        } catch (RuntimeException $e) {
+            return response()->json(
+                ['message' => $e->getMessage()],
+                Response::HTTP_CONFLICT,
+            );
+        }
+
+        $this->standings->recalculate($session);
+
+        return $this->matchResponse($match);
+    }
+
     private function matchResponse(MatchGame $match): Response
     {
         return (new MatchResource($match->load(['court', 'teams.players'])))->response();
