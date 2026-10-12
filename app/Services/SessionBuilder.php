@@ -18,6 +18,7 @@ use App\Models\Player;
 use App\Models\Round;
 use App\Models\Session;
 use App\Models\SessionParticipant;
+use App\Models\SessionQueue;
 use App\Models\SessionStanding;
 use App\Models\SessionTeam;
 use Illuminate\Support\Collection;
@@ -195,10 +196,15 @@ class SessionBuilder
 
             // Each entry is [sideAParticipants, sideBParticipants].
             // Mexicano decides opponents by standings rather than by
-            // evenness, so it needs its own strategies.
+            // evenness, and KOTH by court position, so both need their own
+            // strategies.
             $isMexicano = $matchType?->category === 'Mexicano';
+            $isKoth = $matchType?->category === 'KOTH';
 
             $pairings = match (true) {
+                $isKoth => $this->kothPairings(
+                    $session, $roster, $courts, $matchType->is_team_based,
+                ),
                 $isMexicano && $matchType->is_team_based => $this->teamPairings(
                     $session, $roster, $courts->count(), byRank: true,
                 ),
@@ -395,6 +401,240 @@ class SessionBuilder
         }
 
         return $pairings;
+    }
+
+    /**
+     * King of the Court.
+     *
+     * Court 1 is the king court. After each round the winning pair moves
+     * one court up (toward court 1) and the losing pair moves one down.
+     * Winners already on court 1 stay and defend; losers on the lowest
+     * court stay. Anyone waiting in session_queue rotates in ahead of
+     * players who have just played, so a big roster still gets court time.
+     *
+     * Round 1 has no results to promote from, so courts are seeded in
+     * roster order.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @param  Collection<int, Court>  $courts
+     * @return list<array{0: list<SessionParticipant>, 1: list<SessionParticipant>}>
+     */
+    private function kothPairings(
+        Session $session,
+        $roster,
+        $courts,
+        bool $teamBased = false,
+    ): array {
+        $byId = $roster->keyBy('id');
+        $playableCourts = min($courts->count(), intdiv($roster->count(), 4));
+
+        if ($playableCourts < 1) {
+            throw new RuntimeException('King of the Court needs at least 4 active players.');
+        }
+
+        if ($teamBased) {
+            // Persist the partnerships, exactly as the other team formats
+            // do, so a pair stays together as it moves between courts.
+            $this->ensureTeams($session, $roster);
+            $roster = $roster->map(fn ($p) => $p->refresh());
+            $byId = $roster->keyBy('id');
+        }
+
+        $previous = $session->rounds()
+            ->where('status', RoundStatus::Completed->value)
+            ->orderByDesc('round_number')
+            ->with(['matches.court', 'matches.teams.teamPlayers'])
+            ->first();
+
+        // Court number => the four participant ids that should play there.
+        $seated = $previous
+            ? $this->kothPromote($previous, $byId, $playableCourts)
+            : [];
+
+        $assigned = collect($seated)->flatten()->filter()->unique()->values();
+
+        // Everyone not seated by promotion, queue first (longest wait), then
+        // players who did not appear in the last round at all.
+        $bench = $this->kothBench($session, $roster, $assigned->all());
+
+        // Promotion can fill every slot, which would leave the same players
+        // waiting forever. Give the queue the lowest court's places, taking
+        // from the bottom up so the king court is never disturbed.
+        //
+        // Team KOTH steps aside in whole pairs: splitting a fixed
+        // partnership to seat one queued player would break the format.
+        if ($bench->isNotEmpty()) {
+            $step = $teamBased ? 2 : 1;
+            $waiting = intdiv($bench->count(), $step) * $step;
+
+            for ($court = $playableCourts; $court >= 1 && $waiting > 0; $court--) {
+                while ($waiting >= $step && count($seated[$court] ?? []) >= $step) {
+                    for ($i = 0; $i < $step; $i++) {
+                        $dropped = array_pop($seated[$court]);
+                        $bench->push($byId[$dropped]);
+                    }
+                    $waiting -= $step;
+                }
+            }
+        }
+
+        // Fill any court that promotion left short. For team formats take
+        // partners together, so a court always holds two complete pairs.
+        for ($court = 1; $court <= $playableCourts; $court++) {
+            $seated[$court] ??= [];
+
+            while (count($seated[$court]) < 4 && $bench->isNotEmpty()) {
+                $next = $bench->shift();
+                $seated[$court][] = $next->id;
+
+                if (! $teamBased || $next->session_team_id === null) {
+                    continue;
+                }
+
+                // Pull this player's partner in alongside them.
+                $partner = $bench->first(
+                    fn ($p) => $p->session_team_id === $next->session_team_id
+                );
+
+                if ($partner && count($seated[$court]) < 4) {
+                    $bench = $bench->reject(fn ($p) => $p->id === $partner->id)->values();
+                    $seated[$court][] = $partner->id;
+                }
+            }
+        }
+
+        $this->syncKothQueue($session, $bench);
+
+        $pairings = [];
+
+        for ($court = 1; $court <= $playableCourts; $court++) {
+            $four = collect($seated[$court] ?? [])
+                ->map(fn ($id) => $byId[$id] ?? null)
+                ->filter()
+                ->values();
+
+            if ($four->count() < 4) {
+                // Not enough players left to fill this court.
+                break;
+            }
+
+            // Team KOTH keeps its fixed pairs; otherwise partners rotate so
+            // the promoted pair is split across the new court.
+            $pairings[] = $teamBased
+                ? [[$four[0], $four[1]], [$four[2], $four[3]]]
+                : [[$four[0], $four[3]], [$four[1], $four[2]]];
+        }
+
+        return $pairings;
+    }
+
+    /**
+     * Move winners up a court and losers down, from a completed round.
+     *
+     * @param  Collection<string, SessionParticipant>  $byId
+     * @return array<int, list<string>> court number => participant ids
+     */
+    private function kothPromote(Round $previous, $byId, int $playableCourts): array
+    {
+        $seated = [];
+
+        foreach ($previous->matches as $match) {
+            $courtNumber = $match->court?->court_number;
+
+            if ($courtNumber === null) {
+                continue;
+            }
+
+            foreach ($match->teams as $team) {
+                $ids = $team->teamPlayers
+                    ->pluck('participant_id')
+                    ->filter(fn ($id) => $byId->has($id))
+                    ->values()
+                    ->all();
+
+                if ($ids === []) {
+                    continue;
+                }
+
+                $won = $match->winner_team !== null && $team->side === $match->winner_team;
+
+                // Court 1 is the top: winners move toward it, losers away.
+                // Nobody moves past either end.
+                $target = $won
+                    ? max(1, $courtNumber - 1)
+                    : min($playableCourts, $courtNumber + 1);
+
+                $seated[$target] = array_merge($seated[$target] ?? [], $ids);
+            }
+        }
+
+        // A court can only seat four; the overflow goes back to the bench.
+        foreach ($seated as $court => $ids) {
+            $seated[$court] = array_slice($ids, 0, 4);
+        }
+
+        ksort($seated);
+
+        return $seated;
+    }
+
+    /**
+     * Players available to fill empty slots: queued players first (by
+     * position, longest wait), then anyone else not already seated.
+     *
+     * @param  Collection<int, SessionParticipant>  $roster
+     * @param  list<string>  $assignedIds
+     * @return Collection<int, SessionParticipant>
+     */
+    private function kothBench(Session $session, $roster, array $assignedIds)
+    {
+        $assigned = array_flip($assignedIds);
+
+        $queuedIds = SessionQueue::query()
+            ->where('session_id', $session->id)
+            ->whereNull('dequeued_at')
+            ->orderBy('position')
+            ->pluck('participant_id')
+            ->all();
+
+        $available = $roster->reject(fn ($p) => isset($assigned[$p->id]));
+
+        $queued = collect($queuedIds)
+            ->map(fn ($id) => $available->firstWhere('id', $id))
+            ->filter();
+
+        $queuedFlip = array_flip($queued->pluck('id')->all());
+
+        // Queued players first, then the rest in roster order.
+        return $queued
+            ->concat($available->reject(fn ($p) => isset($queuedFlip[$p->id])))
+            ->values();
+    }
+
+    /**
+     * Rewrite session_queue to exactly the players sitting out this round,
+     * so the client's waiting list reflects reality.
+     *
+     * @param  Collection<int, SessionParticipant>  $bench
+     */
+    private function syncKothQueue(Session $session, $bench): void
+    {
+        // session_queue_position_unique covers (session_id, position) and
+        // ignores dequeued_at, so superseded rows would block reusing
+        // position 1. The queue is rebuilt wholesale each round, so clear
+        // it rather than tombstoning.
+        SessionQueue::query()
+            ->where('session_id', $session->id)
+            ->delete();
+
+        foreach ($bench->values() as $index => $participant) {
+            SessionQueue::query()->create([
+                'session_id' => $session->id,
+                'participant_id' => $participant->id,
+                'position' => $index + 1,
+                'enqueued_at' => now(),
+            ]);
+        }
     }
 
     /**

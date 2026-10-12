@@ -14,7 +14,8 @@
 | `team_americano` | **fixed pairs** | Pairs created once in `session_teams`, reused for every later round; only opponents rotate, ordered by matches played so each team gets even time |
 | `team_mexicano` | fixed pairs + **rank** | Pairs fixed; strongest teams matched against each other by combined points |
 | `mexicano` | **rank** | Roster in standings order; each court takes four and pairs 1st+4th v 2nd+3rd |
-| `team_koth` | fixed pairs | Shares the team strategy. Missing the king-court promotion/relegation rule |
+| `koth` | **promotion** | Court 1 is the king court; winners move up, losers down, queue rotates in |
+| `team_koth` | **promotion** + fixed pairs | Same, with partnerships kept intact — pairs move between courts together |
 | `mix_americano` | **mixed** | Requires every participant's gender; pairs M+F per court |
 | `mixicano` | mixed + **rank** | M+F pairs, balanced by standings (higher man with lower woman) |
 
@@ -41,6 +42,27 @@ roster order stands — the conventional seeding.
 strongest teams meet. `mixicano` applies the balancing within the
 gender constraint: the higher-ranked man partners the lower-ranked woman.
 
+### King of the Court
+
+Court 1 is the king court. After each completed round the winning pair
+moves one court up and the losing pair one down. Winners already on court
+1 stay and defend; losers on the lowest court stay. Round 1 has no
+results to promote from, so courts are seeded in roster order.
+
+Promotion alone would fill every slot and leave the same players waiting
+forever, so when anyone is benched the lowest court gives up places to
+the queue, taking from the bottom up — the king court is never disturbed.
+
+`session_queue` (previously unused) now holds exactly the players sitting
+out the current round, ordered by position, which is what the client's
+"N waiting" list shows. It is rebuilt each round rather than appended to:
+`session_queue_position_unique` covers `(session_id, position)` and
+ignores `dequeued_at`, so stale rows would block reusing position 1.
+
+`team_koth` persists its partnerships in `session_teams` like the other
+team formats, and both the promotion and the queue rotation move whole
+pairs, never splitting one.
+
 ### Mixed formats
 
 `mix_americano` and `mixicano` refuse to generate a round unless **every**
@@ -53,26 +75,22 @@ each, so they are treated as unset.
 
 ## Still missing
 
-| # | Code | What it needs |
-|---|---|---|
-| 1 | `koth` | King/challenger courts, winners up and losers down. Not round-shaped: the `rounds` table models "generate N matches at once", which fits KOTH poorly |
-| 2 | `team_koth` | Same, with fixed teams |
+All 8 match types now have their own rule. What remains is refinement
+rather than missing behaviour:
 
-KOTH currently runs the generic rotation, so it plays like Americano.
+- **Partner-repeat avoidance** in `americano`: true Americano avoids
+  repeating a partnership until everyone has partnered once. The sort does
+  not track partnership history, so repeats can happen early.
+- **KOTH continuous play**: real KOTH is often played as a running game
+  rather than discrete rounds. This implementation is round-based, which
+  matches the client's "Generate next session" button but is not the only
+  convention.
+- **`is_mixed` with `other`/`undisclosed`**: those players cannot join a
+  mixed session at all. A three-way or preference-based rule would need a
+  product decision.
 
 The three `club_*` types were **removed** (migration
 `2025_01_01_001000`). They were seeded but never implemented —
 `requires_club` was unenforced, so a "club" session could be created with
 no club at all. `down()` restores them.
 
-## Cross-cutting gaps
-
-- **Partner-repeat avoidance** in `americano`: true Americano avoids
-  repeating a partnership until everyone has partnered once. The sort does
-  not track partnership history, so repeats happen early.
-- **Odd rosters**: with 6 players on 1 court, two sit out and the sort
-  picks who. Correct for Americano; KOTH and Mexicano have their own
-  conventions. `session_queue` exists for this and is still unused.
-- **`is_mixed` with `other`/`undisclosed`**: these players simply cannot
-  join a mixed session. A three-way or preference-based rule would need a
-  product decision.
